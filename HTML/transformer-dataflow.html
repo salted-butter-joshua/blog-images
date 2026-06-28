@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Transformer 全流程数据流转 · 动态图</title>
+<style>
+  :root{
+    --bg:#faf9f5; --card:#ffffff; --text:#2c2c2a; --text2:#5f5e5a; --muted:#9a988f;
+    --border:#e7e5dc; --accent:#185fa5; --accent-bg:#e6f1fb; --accent-bd:#85b7eb;
+    --rail-on:#185fa5; --rail-off:#cfccc2;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#1c1b18; --card:#26251f; --text:#e9e7de; --text2:#b6b4aa; --muted:#7c7b73;
+      --border:#383731; --accent:#85b7eb; --accent-bg:#0c2540; --accent-bd:#185fa5;
+      --rail-on:#85b7eb; --rail-off:#48473f; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.6;padding:20px}
+  .wrap{max-width:880px;margin:0 auto}
+  h1{font-size:19px;font-weight:500;margin:0 0 2px}
+  .sub{font-size:13px;color:var(--text2);margin:0 0 16px}
+
+  .rail{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+  .rphase{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--rail-off)}
+  .rdot{width:9px;height:9px;border-radius:50%;background:var(--rail-off);transition:all .3s}
+  .rphase.on{color:var(--rail-on)}
+  .rphase.on .rdot{background:var(--rail-on);box-shadow:0 0 0 3px var(--accent-bg)}
+  .rsep{color:var(--rail-off);font-size:11px}
+
+  .controls{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+  button{padding:8px 14px;font-size:14px;background:transparent;color:var(--text);
+    border:0.5px solid var(--border);border-radius:8px;cursor:pointer;font-family:inherit;transition:all .15s}
+  button:hover{background:var(--bg)}
+  button:disabled{opacity:.4;cursor:default}
+  .play{border:2px solid var(--accent-bd);color:var(--accent);min-width:108px}
+  .stepind{font-size:13px;color:var(--text2);min-width:50px;text-align:center}
+  .speed{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);margin-left:auto}
+  .speed input{width:110px}
+
+  .card{background:var(--card);border:0.5px solid var(--border);border-radius:14px;padding:18px 20px;min-height:320px}
+  .steptitle{font-size:16px;font-weight:500;margin:0 0 4px}
+  .stepdim{font-size:12px;color:var(--accent);font-family:ui-monospace,Menlo,monospace;margin-bottom:14px}
+  .stage{display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap;
+    min-height:200px;padding:8px 0;overflow-x:auto}
+  .desc{font-size:13px;color:var(--text2);margin-top:14px;line-height:1.7;border-top:0.5px solid var(--border);padding-top:12px}
+  .desc b{color:var(--text)}
+
+  .block{display:flex;flex-direction:column;align-items:center;gap:6px}
+  .bt{font-size:12px;color:var(--text2);font-weight:500}
+  .grid{display:grid;gap:2px}
+  .cell{border-radius:3px;border:0.5px solid rgba(0,0,0,0.04)}
+  .dim{font-size:11px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
+  .op{font-size:20px;color:var(--muted);padding:0 2px}
+  .masked{background:repeating-linear-gradient(45deg,#cfccc2,#cfccc2 2px,transparent 2px,transparent 5px)!important;opacity:.5}
+  .axis{font-size:10.5px;color:var(--muted)}
+
+  .chip{padding:8px 12px;border-radius:9px;background:var(--accent-bg);color:var(--accent);
+    font-size:14px;font-weight:500;text-align:center}
+  .chip small{display:block;font-size:10px;color:var(--text2);font-weight:400;font-family:ui-monospace,monospace}
+
+  .vbar{display:flex;align-items:center;gap:8px;margin:3px 0;font-size:12px}
+  .vbar .lbl{width:42px;text-align:right;color:var(--text2)}
+  .vbar .track{flex:1;height:16px;background:var(--bg);border-radius:4px;overflow:hidden}
+  .vbar .fill{height:100%;background:rgba(55,138,221,.55);border-radius:4px}
+  .vbar.win .fill{background:rgba(29,158,117,.75)}
+  .vbar .pct{width:38px;color:var(--text2)}
+
+  @keyframes cellIn{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:scale(1)}}
+  @media (prefers-reduced-motion: no-preference){
+    .anim .cell{animation:cellIn .4s ease both}
+    .anim .chip,.anim .vbar{animation:cellIn .4s ease both}
+  }
+  .note{font-size:11px;color:var(--muted);margin-top:6px;text-align:center;max-width:520px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Transformer 全流程数据流转动态图</h1>
+  <p class="sub">用上一步 / 下一步逐帧观看，或点自动播放（默认较慢，可调速）。键盘 ← → 也能翻页。图示维度已简化以便看清：seq=4、d_model=8、头数 h=2、d_k=4、d_ff=16、词表=10。</p>
+
+  <div class="rail" id="rail"></div>
+
+  <div class="controls">
+    <button id="prev">← 上一步</button>
+    <button id="play" class="play">▶ 自动播放</button>
+    <button id="next">下一步 →</button>
+    <span class="stepind" id="ind">1 / 16</span>
+    <span class="speed">慢 <input type="range" id="spd" min="2500" max="9000" step="500" value="6000"> 快</span>
+  </div>
+
+  <div class="card">
+    <div class="steptitle" id="title"></div>
+    <div class="stepdim" id="dim"></div>
+    <div class="stage anim" id="stage"></div>
+    <div class="desc" id="desc"></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var SEQ=4, DM=8, H=2, DK=4, DFF=16, VOCAB=10;
+  var TOKENS=["我","爱","机器","学习"];
+  var VWORDS=["I","love","machine","learning","the","a","study","like","is","."];
+  var BASE={teal:[29,158,117],purple:[127,119,221],coral:[216,90,48],blue:[55,138,221],amber:[239,159,39],gray:[136,135,128],green:[99,153,34]};
+
+  function rng(seed){var s=seed>>>0;return function(){s=(s*1103515245+12345)&0x7fffffff;return s/0x7fffffff;};}
+  function cellbg(v,hue){var b=BASE[hue]||BASE.teal;return 'rgba('+b[0]+','+b[1]+','+b[2]+','+(0.12+0.8*v).toFixed(3)+')';}
+
+  function mat(o){
+    // o: rows, cols, hue, seed, title, dim, mask, hiRow
+    var cell=Math.max(13,Math.min(24,Math.floor(360/o.cols)));
+    var r=rng(o.seed||7), html='<div class="block"><div class="bt">'+(o.title||'')+'</div>';
+    html+='<div class="grid" style="grid-template-columns:repeat('+o.cols+','+cell+'px)">';
+    for(var i=0;i<o.rows;i++)for(var j=0;j<o.cols;j++){
+      var v=r(); var cls='cell'; var bg=cellbg(v,o.hue);
+      if(o.mask && j>i){cls='cell masked';}
+      var hl=(o.hiRow!=null && i===o.hiRow)?'box-shadow:0 0 0 2px var(--accent);':'';
+      var d=((i*o.cols+j)%48)*10;
+      html+='<div class="'+cls+'" style="width:'+cell+'px;height:'+cell+'px;background:'+bg+';animation-delay:'+d+'ms;'+hl+'"></div>';
+    }
+    html+='</div>';
+    if(o.dim) html+='<div class="dim">'+o.dim+'</div>';
+    html+='</div>';
+    return html;
+  }
+  function op(s){return '<div class="op">'+s+'</div>';}
+  function wrapRow(inner){return inner;}
+
+  var steps=[
+  {phase:0,title:"1 · 输入序列",dim:"tokens → 序列长度 seq_len = 4",
+   html:function(){
+     var h='';TOKENS.forEach(function(t,i){h+='<div class="chip">'+t+'<small>id '+(1000+i*37)+'</small></div>';});
+     return h;},
+   desc:"一句话先被切成 <b>token</b>，再映射成整数 id。这里 4 个 token，<b>序列长度 seq_len = 4</b>。这是后续所有张量的“行数”。"},
+
+  {phase:1,title:"2 · Embedding：token → 向量",dim:"[4] → X : [4 × 8]　(真实 d_model = 512)",
+   html:function(){
+     return '<div class="block"><div class="bt">tokens</div>'+
+       '<div style="display:flex;flex-direction:column;gap:4px">'+TOKENS.map(function(t){return '<div class="chip" style="padding:3px 10px">'+t+'</div>';}).join('')+'</div></div>'+
+       op('→')+ mat({rows:SEQ,cols:DM,hue:'teal',seed:11,title:'X (词向量矩阵)',dim:'[4 × 8]  (seq × d_model)'});},
+   desc:"每个 token 查 <b>embedding 表</b>得到一个稠密向量。4 个 token 堆成矩阵 <b>X，形状 [4 × 8]</b>：行=token，列=特征维 d_model。图示用 8 维，真实 Transformer 是 512 维。"},
+
+  {phase:2,title:"3 · 位置编码：注入顺序信息",dim:"X [4×8] + PE [4×8] = X' [4×8]",
+   html:function(){
+     return mat({rows:SEQ,cols:DM,hue:'teal',seed:11,title:'X',dim:'[4 × 8]'})+op('+')+
+       mat({rows:SEQ,cols:DM,hue:'amber',seed:91,title:'PE (位置编码)',dim:'[4 × 8]'})+op('=')+
+       mat({rows:SEQ,cols:DM,hue:'teal',seed:23,title:"X'",dim:'[4 × 8]'});},
+   desc:"自注意力本身不分先后，所以把 <b>位置编码 PE</b> 逐元素加到 X 上。形状不变，仍是 <b>[4 × 8]</b>，但每个位置现在带上了“我是第几个”的信息。"},
+
+  {phase:3,title:"4 · 自注意力：投影出 Q / K / V",dim:"X' [4×8] ×Wq/Wk/Wv → Q,K,V 各 [4×8]",
+   html:function(){
+     return mat({rows:SEQ,cols:DM,hue:'teal',seed:23,title:"X'",dim:'[4 × 8]'})+op('→')+
+       mat({rows:SEQ,cols:DM,hue:'purple',seed:31,title:'Q = X′Wq',dim:'[4 × 8]'})+
+       mat({rows:SEQ,cols:DM,hue:'teal',seed:41,title:'K = X′Wk',dim:'[4 × 8]'})+
+       mat({rows:SEQ,cols:DM,hue:'coral',seed:51,title:'V = X′Wv',dim:'[4 × 8]'});},
+   desc:"同一个 X′ 乘三个不同的可学习矩阵，得到 <b>Query（我想找什么）、Key（我能被怎样匹配）、Value（我贡献什么内容）</b>。三者各为 <b>[4 × 8]</b>。"},
+
+  {phase:3,title:"5 · 多头拆分",dim:"[4×8] 拆成 h=2 个头，每头 [4×4]　(d_k = 8/2 = 4)",
+   html:function(){
+     return mat({rows:SEQ,cols:DM,hue:'purple',seed:31,title:'Q [4 × 8]',dim:'按列切成两半'})+op('→')+
+       mat({rows:SEQ,cols:DK,hue:'purple',seed:31,title:'Q 头1',dim:'[4 × 4]'})+
+       mat({rows:SEQ,cols:DK,hue:'blue',seed:131,title:'Q 头2',dim:'[4 × 4]'});},
+   desc:"把 d_model=8 沿特征维切成 <b>h=2 个头</b>，每个头维度 <b>d_k = 8/2 = 4</b>。K、V 同样拆分。每个头在自己的低维子空间里独立做注意力，相当于从多个视角同时观察。下面以 <b>头1</b> 为例。"},
+
+  {phase:3,title:"6 · 打分：Q · Kᵀ",dim:"Q1 [4×4] · K1ᵀ [4×4] → 分数 [4×4] (seq×seq)",
+   html:function(){
+     return mat({rows:SEQ,cols:DK,hue:'purple',seed:31,title:'Q 头1',dim:'[4 × 4]'})+op('·')+
+       mat({rows:DK,cols:SEQ,hue:'teal',seed:41,title:'K 头1ᵀ',dim:'[4 × 4]'})+op('=')+
+       mat({rows:SEQ,cols:SEQ,hue:'blue',seed:61,title:'分数 scores',dim:'[4 × 4]'});},
+   desc:"用 Query 和每个 Key 做<b>点积</b>，衡量两词的相关度。结果是 <b>[4 × 4]</b> 的方阵：行 i、列 j 的格子 = 词 i 对词 j 的关注分数。注意维度从 d_k 变成了 seq×seq。"},
+
+  {phase:3,title:"7 · 缩放 + softmax",dim:"scores / √d_k → softmax → 权重 [4×4]，每行和=1",
+   html:function(){
+     return mat({rows:SEQ,cols:SEQ,hue:'blue',seed:61,title:'分数 / √d_k',dim:'[4 × 4]'})+op('→')+
+       mat({rows:SEQ,cols:SEQ,hue:'amber',seed:71,title:'softmax 权重',dim:'[4 × 4] 每行Σ=1',hiRow:1});},
+   desc:"先除以 <b>√d_k</b>（这里 √4 = 2）防止数值过大让 softmax 饱和、梯度消失；再对<b>每一行</b>做 softmax，得到一组和为 1 的<b>注意力权重</b>。高亮行表示“某个词对所有词的注意力分配”。"},
+
+  {phase:3,title:"8 · 加权求和：权重 · V",dim:"权重 [4×4] · V1 [4×4] → 头1输出 [4×4]",
+   html:function(){
+     return mat({rows:SEQ,cols:SEQ,hue:'amber',seed:71,title:'权重',dim:'[4 × 4]'})+op('·')+
+       mat({rows:SEQ,cols:DK,hue:'coral',seed:51,title:'V 头1',dim:'[4 × 4]'})+op('=')+
+       mat({rows:SEQ,cols:DK,hue:'purple',seed:81,title:'头1 输出 Z₁',dim:'[4 × 4]'});},
+   desc:"用权重对所有词的 <b>Value</b> 加权求和：权重大的词，其 Value 在输出里占比就大。这就是注意力真正“融合上下文”的一步。每个头得到 <b>[4 × 4]</b> 的输出。"},
+
+  {phase:3,title:"9 · 拼接多头 + 线性融合",dim:"concat 2×[4×4] → [4×8] ×Wo → [4×8]",
+   html:function(){
+     return mat({rows:SEQ,cols:DK,hue:'purple',seed:81,title:'头1 Z₁',dim:'[4 × 4]'})+op('+')+
+       mat({rows:SEQ,cols:DK,hue:'blue',seed:181,title:'头2 Z₂',dim:'[4 × 4]'})+op('→')+
+       mat({rows:SEQ,cols:DM,hue:'teal',seed:91,title:'Concat ×Wo',dim:'[4 × 8]'});},
+   desc:"把所有头的输出<b>拼接（concat）</b>回 [4 × 8]，再过一个输出投影矩阵 <b>Wo</b> 融合。维度回到 [4 × 8]，与输入一致——这样才能堆叠多层。"},
+
+  {phase:3,title:"10 · Add & Norm（残差 + 层归一化）",dim:"注意力输出 + X' → LayerNorm → [4×8]",
+   html:function(){
+     return mat({rows:SEQ,cols:DM,hue:'teal',seed:91,title:'注意力输出',dim:'[4 × 8]'})+op('+')+
+       mat({rows:SEQ,cols:DM,hue:'teal',seed:23,title:"残差 X'",dim:'[4 × 8]'})+op('→')+
+       mat({rows:SEQ,cols:DM,hue:'teal',seed:99,title:'LayerNorm',dim:'[4 × 8]'});},
+   desc:"<b>残差连接</b>把子层输入直接加到输出上（给梯度一条高速公路，便于堆深），再做一次 <b>LayerNorm</b> 稳定分布。形状始终 [4 × 8]。"},
+
+  {phase:3,title:"11 · 前馈网络 FFN",dim:"[4×8] → [4×16] (ReLU) → [4×8]　(真实 d_ff=2048)",
+   html:function(){
+     return mat({rows:SEQ,cols:DM,hue:'teal',seed:99,title:'输入',dim:'[4 × 8]'})+op('→')+
+       mat({rows:SEQ,cols:DFF,hue:'amber',seed:111,title:'升维 + ReLU',dim:'[4 × 16]'})+op('→')+
+       mat({rows:SEQ,cols:DM,hue:'teal',seed:121,title:'降维',dim:'[4 × 8]'});},
+   desc:"对<b>每个位置独立</b>地过一个两层前馈网络：先升维（8→16，真实 512→2048）过 ReLU，再降回。注意力负责<b>词之间</b>横向交换信息，FFN 负责<b>单个词内部</b>的非线性加工。"},
+
+  {phase:3,title:"12 · Add & Norm → Encoder 输出",dim:"重复以上 N 层 → 编码完成 [4×8]",
+   html:function(){
+     return mat({rows:SEQ,cols:DM,hue:'teal',seed:121,title:'FFN 输出',dim:'[4 × 8]'})+op('+')+
+       mat({rows:SEQ,cols:DM,hue:'teal',seed:99,title:'残差',dim:'[4 × 8]'})+op('→')+
+       mat({rows:SEQ,cols:DM,hue:'green',seed:133,title:'Encoder 输出',dim:'[4 × 8]'});},
+   desc:"再来一次 Add & Norm，一个 Encoder 层就完成了。整段“自注意力 → Add&Norm → FFN → Add&Norm”会<b>堆叠 N 层</b>（论文 6 层）。最终得到<b>每个源词的上下文表示</b> [4 × 8]，留给 Decoder 使用。"},
+
+  {phase:4,title:"13 · Decoder：带掩码的自注意力",dim:"分数 [4×4] 的上三角被屏蔽（设 -∞）",
+   html:function(){
+     return mat({rows:SEQ,cols:SEQ,hue:'blue',seed:211,title:'分数',dim:'[4 × 4]'})+op('→')+
+       mat({rows:SEQ,cols:SEQ,hue:'blue',seed:211,title:'掩码后',dim:'[4 × 4] 上三角=−∞',mask:true});},
+   desc:"Decoder 自回归生成：算第 t 个词时<b>不能看到后面的词</b>。做法是把分数矩阵的<b>上三角（未来位置）</b>设成 −∞，softmax 后权重变 0（图中斜纹格）。其余计算与普通自注意力相同。"},
+
+  {phase:4,title:"14 · 交叉注意力（连接源与目标）",dim:"Q←Decoder [4×8]，K,V←Encoder 输出 [4×8]",
+   html:function(){
+     return mat({rows:SEQ,cols:DM,hue:'purple',seed:221,title:'Q ← Decoder',dim:'[4 × 8]'})+op('×')+
+       mat({rows:SEQ,cols:DM,hue:'green',seed:133,title:'K,V ← Encoder',dim:'[4 × 8]'})+op('→')+
+       mat({rows:SEQ,cols:DM,hue:'teal',seed:231,title:'对齐输出',dim:'[4 × 8]'});},
+   desc:"关键差异在来源：<b>Query 来自 Decoder</b>（正在生成的目标），<b>Key/Value 来自 Encoder 输出</b>（源句子）。于是生成每个目标词时，注意力会聚焦到源句相关部分——这就是源/目标<b>对齐</b>的桥梁。"},
+
+  {phase:4,title:"15 · Decoder 的 FFN + Add & Norm",dim:"[4×8] → [4×16] → [4×8]，堆叠 N 层",
+   html:function(){
+     return mat({rows:SEQ,cols:DM,hue:'teal',seed:231,title:'输入',dim:'[4 × 8]'})+op('→')+
+       mat({rows:SEQ,cols:DFF,hue:'amber',seed:241,title:'FFN 升维',dim:'[4 × 16]'})+op('→')+
+       mat({rows:SEQ,cols:DM,hue:'teal',seed:251,title:'Decoder 输出',dim:'[4 × 8]'});},
+   desc:"Decoder 层同样有 FFN 和 Add & Norm，整层（掩码自注意力 → 交叉注意力 → FFN）也<b>堆叠 N 层</b>。最终得到每个目标位置的表示 [4 × 8]。"},
+
+  {phase:5,title:"16 · Linear + Softmax → 输出下一个词",dim:"取最后位置 [8] ×W → logits [10] → softmax → 概率",
+   html:function(){
+     var r=rng(305),logit=[];for(var i=0;i<VOCAB;i++)logit.push(r());
+     var mx=Math.max.apply(null,logit),ex=logit.map(function(x){return Math.exp((x-mx)*3);});
+     var sm=ex.reduce(function(a,b){return a+b;},0),pr=ex.map(function(x){return x/sm;});
+     var top=pr.indexOf(Math.max.apply(null,pr));
+     var h='<div class="block" style="width:100%;max-width:420px"><div class="bt">词表概率分布 (vocab=10)</div>';
+     for(var k=0;k<VOCAB;k++){
+       h+='<div class="vbar'+(k===top?' win':'')+'"><span class="lbl">'+VWORDS[k]+'</span>'+
+          '<span class="track"><span class="fill" style="width:'+(pr[k]*100).toFixed(0)+'%"></span></span>'+
+          '<span class="pct">'+(pr[k]*100).toFixed(0)+'%</span></div>';
+     }
+     h+='<div class="note">argmax → 选中 “'+VWORDS[top]+'”，作为生成的下一个词，再拼回输入循环生成。</div></div>';
+     return h;},
+   desc:"取 Decoder 输出的<b>最后一个位置</b>向量 [8]，经线性层映射到<b>词表维度</b> [10]（真实是几万），再 softmax 成<b>概率分布</b>。取概率最高的词作为输出，拼回序列、自回归地生成下一个——直到结束符。"}
+  ];
+
+  var phases=["输入","Embedding","位置编码","Encoder","Decoder","输出"];
+  var cur=0, playing=false, timer=null, speed=6000;
+
+  var rail=document.getElementById('rail');
+  phases.forEach(function(p,i){
+    if(i>0) rail.innerHTML+='<span class="rsep">›</span>';
+    rail.innerHTML+='<span class="rphase" data-p="'+i+'"><span class="rdot"></span>'+p+'</span>';
+  });
+
+  function render(){
+    var s=steps[cur];
+    document.getElementById('title').textContent=s.title;
+    document.getElementById('dim').textContent=s.dim;
+    var stage=document.getElementById('stage');
+    stage.classList.remove('anim'); void stage.offsetWidth; stage.classList.add('anim');
+    stage.innerHTML=s.html();
+    document.getElementById('desc').innerHTML=s.desc;
+    document.getElementById('ind').textContent=(cur+1)+' / '+steps.length;
+    document.querySelectorAll('.rphase').forEach(function(el){
+      el.classList.toggle('on', +el.dataset.p===s.phase);
+    });
+    document.getElementById('prev').disabled=(cur===0);
+    document.getElementById('next').disabled=(cur===steps.length-1);
+  }
+  function go(d){cur=Math.max(0,Math.min(steps.length-1,cur+d));render();
+    if(playing && cur===steps.length-1) stop();}
+  function start(){playing=true;document.getElementById('play').textContent='⏸ 暂停';
+    timer=setInterval(function(){ if(cur<steps.length-1) go(1); else stop(); },speed);}
+  function stop(){playing=false;document.getElementById('play').textContent='▶ 自动播放';
+    if(timer){clearInterval(timer);timer=null;}}
+
+  document.getElementById('prev').onclick=function(){stop();go(-1);};
+  document.getElementById('next').onclick=function(){stop();go(1);};
+  document.getElementById('play').onclick=function(){ if(playing) stop(); else { if(cur===steps.length-1)cur=0; render(); start(); } };
+  document.getElementById('spd').oninput=function(){speed=11500-(+this.value);if(playing){stop();start();}};
+  document.addEventListener('keydown',function(e){
+    if(e.key==='ArrowRight'){stop();go(1);} if(e.key==='ArrowLeft'){stop();go(-1);}});
+
+  // speed slider: left=慢(big interval), right=快(small). map value(2500..9000) -> interval(9000..2500)
+  speed=11500-6000;
+  render();
+})();
+</script>
+</body>
+</html>
